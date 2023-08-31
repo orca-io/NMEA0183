@@ -179,7 +179,6 @@ bool tNMEA0183::SendMessageAndWaitAck(const string &message, const string &expec
   bool ackReceived = false;
   bool messageReceived = false;
   string sentSentence, line;
-  // std::cout << "tNMEA0183::SendMessageAndWaitAck" << std::endl;
   if ( !Open() ) return false;
 
   port->write(message);
