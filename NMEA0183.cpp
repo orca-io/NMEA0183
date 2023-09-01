@@ -24,23 +24,21 @@ OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #ifndef ARDUINO
 #include <cstdio>
+#include <cstring>
+#include <thread>
+#include <chrono>
 #endif
 #include "NMEA0183.h"
 
+using namespace std;
+
 //*****************************************************************************
-tNMEA0183::tNMEA0183(tNMEA0183Stream *stream, uint8_t _SourceID)
-: port(0), MsgCheckSumStartPos(SIZE_MAX),
+tNMEA0183::tNMEA0183(uint8_t _SourceID)
+: MsgCheckSumStartPos(SIZE_MAX),
   MsgInPos(0), MsgInStarted(false),
   MsgOutWritePos(0), MsgOutReadPos(0), MsgOutBuf(0), MsgOutBufSize(3*MAX_NMEA0183_MSG_BUF_LEN),
   MsgHandler(0)
 {
-  SetMessageStream(stream,_SourceID);
-}
-
-//*****************************************************************************
-void tNMEA0183::SetMessageStream(tNMEA0183Stream *stream, uint8_t _SourceID) {
-  SourceID=_SourceID;
-  port=stream;
 }
 
 //*****************************************************************************
@@ -85,8 +83,39 @@ void tNMEA0183::ParseMessages() {
     kick();
 }
 
+void tNMEA0183::ParseMessage() {
+  tNMEA0183Msg NMEA0183Msg;
+
+  if ( !Open() ) return;
+
+  if (GetMessage(NMEA0183Msg)) {
+    if (MsgHandler!=0) MsgHandler(NMEA0183Msg);
+  }
+
+  kick();
+}
+
 //*****************************************************************************
 bool tNMEA0183::GetMessage(tNMEA0183Msg &NMEA0183Msg) {
+  return GetMessage([this, &NMEA0183Msg](){
+      if (NMEA0183Msg.SetMessage(MsgInBuf)) {
+        NMEA0183Msg.SourceID=SourceID;
+        return true;
+      }
+      return false;
+    }
+  );
+}
+
+bool tNMEA0183::GetMessage(string &message) {
+  return GetMessage([this, &message](){
+      message = this->MsgInBuf;
+      return true;
+    }
+  );
+}
+
+bool tNMEA0183::GetMessage(function<bool()> FillBuffer) {
   if ( !IsOpen() ) return false;
 
   bool result=false;
@@ -104,10 +133,7 @@ bool tNMEA0183::GetMessage(tNMEA0183Msg &NMEA0183Msg) {
         MsgInPos++;
         if (MsgCheckSumStartPos!=SIZE_MAX and MsgCheckSumStartPos+3==MsgInPos) { // We have full checksum and so full message
             MsgInBuf[MsgInPos]=0; // add null termination
-          if (NMEA0183Msg.SetMessage(MsgInBuf)) {
-            NMEA0183Msg.SourceID=SourceID;
-            result=true;
-          }
+          result = FillBuffer();
           MsgInStarted=false;
           MsgInPos=0;
           MsgCheckSumStartPos=SIZE_MAX;
@@ -138,6 +164,45 @@ bool tNMEA0183::SendMessage(const tNMEA0183Msg &NMEA0183Msg) {
   }
   sprintf(buf,"*%02X\r\n",NMEA0183Msg.GetCheckSum());
   return SendBuf(buf);
+}
+
+bool tNMEA0183::SendMessage(const string &message) {
+  if ( !Open() ) return false;
+
+  port->write(message);
+  return true;
+}
+
+bool tNMEA0183::SendMessageAndWaitAck(const string &message, const string &expectedAck, uint8_t iterations) {
+  bool ackReceived = false;
+  string sentSentence, line;
+  if ( !Open() ) return false;
+
+  port->write(message);
+
+  sentSentence = message.substr(0, message.length() - 1); // remove endline
+
+  for (uint8_t i = 0; i < iterations; i++) {
+      line.clear();
+      if (!GetMessage(line))
+        continue;
+
+      if (line.empty()) {
+          break;
+      }
+
+      // if we want to check if any message was received, we need to compare because
+      // we receive echo
+      // if (sentSentence.compare(line) != 0)
+      //     messageReceived = true;
+
+      if (expectedAck.compare(line) == 0 ) {
+          ackReceived = true;
+          break;
+      }
+  }
+
+  return ackReceived;
 }
 
 //*****************************************************************************
